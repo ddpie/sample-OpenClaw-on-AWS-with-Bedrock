@@ -264,14 +264,12 @@ Resources:
           exec 2>&1
           
           echo "=========================================="
-          echo "OpenClaw AWS Native Setup: $(date)"
+          echo "OpenClaw AWS Setup: $(date)"
           echo "=========================================="
           
           export DEBIAN_FRONTEND=noninteractive
           
           # Mount data volume
-          echo "[0/9] Mounting data volume..."
-          # Find the data volume - look for unformatted or openclaw-data labeled device
           DATA_DEVICE=""
           for dev in /dev/nvme1n1 /dev/xvdf /dev/sdf; do
             if [ -b "$dev" ]; then
@@ -299,13 +297,9 @@ Resources:
           fi
           
           # System update
-          echo "[1/9] Updating system..."
-          apt-get update
-          apt-get upgrade -y
-          apt-get install -y unzip curl
+          apt-get update && apt-get upgrade -y && apt-get install -y unzip curl
 
-          # Detect region and instance ID once (IMDSv2)
-          echo "[*] Detecting instance metadata..."
+          # Detect region and instance ID (IMDSv2)
           IMDS_TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null || echo "")
           if [ -n "$IMDS_TOKEN" ]; then
             AWS_REGION=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || echo "")
@@ -319,20 +313,16 @@ Resources:
           echo "Region: $AWS_REGION | Instance: $INSTANCE_ID"
 
           # Install AWS CLI v2
-          echo "[2/9] Installing AWS CLI..."
           curl "https://awscli.amazonaws.com/awscli-exe-linux-$(arch).zip" -o "awscliv2.zip"
           unzip -q awscliv2.zip
           ./aws/install
           rm -rf aws awscliv2.zip
           
-          # Install SSM Agent (usually pre-installed)
-          echo "[3/9] Configuring SSM Agent..."
+          # SSM Agent
           snap start amazon-ssm-agent || systemctl start amazon-ssm-agent
           
-          # Install Docker (if EnableSandbox=true)
           if [ "${EnableSandbox}" = "true" ]; then
-            # Install Docker via GPG-signed apt repo
-            echo "[4/9] Installing Docker..."
+            # Install Docker
             install -m 0755 -d /etc/apt/keyrings
             curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
             chmod a+r /etc/apt/keyrings/docker.asc
@@ -343,15 +333,14 @@ Resources:
             systemctl start docker
             usermod -aG docker ubuntu
           else
-            echo "[4/9] Skipping Docker (EnableSandbox=false)..."
+            echo "Skipping Docker"
           fi
           
           # Install Node.js
-          echo "[5/9] Installing Node.js..."
           sudo -u ubuntu bash << 'UBUNTU_SCRIPT'
           cd ~
           
-          # Install NVM (download first, then execute)
+          # Install NVM
           NVM_VERSION="v0.40.1"
           for i in 1 2 3; do
             curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/${!NVM_VERSION}/install.sh" -o /tmp/nvm-install.sh && break
@@ -369,23 +358,15 @@ Resources:
           nvm use 22
           nvm alias default 22
           
-          # Install OpenClaw (with timeout and retry)
-          # arm64 has no prebuilt @discordjs/opus binary, use --ignore-scripts on arm64
+          # Install OpenClaw
           npm config set registry https://registry.npmjs.org/
           ARCH=$(uname -m)
           if [ "$ARCH" = "aarch64" ]; then
-            echo "ARM64 detected, installing with --ignore-scripts to skip native build..."
             npm install -g openclaw@latest --timeout=300000 --ignore-scripts || {
-              echo "OpenClaw installation failed on arm64, retrying..."
-              npm cache clean --force
-              npm install -g openclaw@latest --timeout=300000 --ignore-scripts
-            }
+              npm cache clean --force && npm install -g openclaw@latest --timeout=300000 --ignore-scripts; }
           else
             npm install -g openclaw@latest --timeout=300000 || {
-              echo "OpenClaw installation failed, retrying..."
-              npm cache clean --force
-              npm install -g openclaw@latest --timeout=300000
-            }
+              npm cache clean --force && npm install -g openclaw@latest --timeout=300000; }
           fi
           
           if ! grep -q 'NVM_DIR' ~/.bashrc; then
@@ -394,34 +375,22 @@ Resources:
           fi
           UBUNTU_SCRIPT
           
-          # Create a wrapper script so openclaw works system-wide without sourcing .bashrc
+          # Create openclaw wrapper
           OPENCLAW_MJS=$(find /home/ubuntu/.nvm -path "*/node_modules/openclaw/openclaw.mjs" 2>/dev/null | head -1)
           NODE_BIN=$(find /home/ubuntu/.nvm -name node -type f 2>/dev/null | head -1)
-          if [ -z "$OPENCLAW_MJS" ] || [ -z "$NODE_BIN" ]; then
-            echo "FATAL: openclaw or node not found - npm install likely failed"
-            exit 1
-          fi
+          [ -z "$OPENCLAW_MJS" ] || [ -z "$NODE_BIN" ] && { echo "FATAL: openclaw not found"; exit 1; }
           echo "#!/bin/bash" > /usr/local/bin/openclaw
           echo "exec $NODE_BIN $OPENCLAW_MJS \"\$@\"" >> /usr/local/bin/openclaw
           chmod +x /usr/local/bin/openclaw
-          echo "openclaw wrapper created: node=$NODE_BIN mjs=$OPENCLAW_MJS"
-          
-          # Verify openclaw actually works before proceeding
-          if ! /usr/local/bin/openclaw --version 2>/dev/null; then
-            echo "FATAL: openclaw wrapper cannot execute - check node path"
-            exit 1
-          fi
-          echo "openclaw verified OK: $(/usr/local/bin/openclaw --version)"
+          /usr/local/bin/openclaw --version || { echo "FATAL: openclaw broken"; exit 1; }
           
           # Configure AWS region
-          echo "[6/9] Configuring AWS..."
           sudo -u ubuntu mkdir -p /home/ubuntu/.aws
           sudo -u ubuntu bash -c "printf '[default]\nregion = %s\noutput = json\n' \"$AWS_REGION\" > /home/ubuntu/.aws/config"
           chown -R ubuntu:ubuntu /home/ubuntu/.aws
           chmod 600 /home/ubuntu/.aws/config
           
-          # Configure environment variables
-          echo "[7/9] Configuring environment variables..."
+          # Configure environment
           {
             echo "export AWS_REGION=$AWS_REGION"
             echo "export AWS_DEFAULT_REGION=$AWS_REGION"
@@ -438,8 +407,7 @@ Resources:
           loginctl enable-linger ubuntu
           systemctl start user@1000.service
           
-          # 运行 OpenClaw onboarding
-          echo "[8/9] Configuring OpenClaw..."
+          # Configure OpenClaw
           
           # Create config directory
           sudo -u ubuntu mkdir -p /home/ubuntu/.openclaw
@@ -538,7 +506,6 @@ Resources:
           fi
           
           # Enable messaging channels
-          echo "[8.5/9] Enabling messaging channels..."
           sudo -H -u ubuntu bash -c '
           export HOME=/home/ubuntu
           export NVM_DIR="$HOME/.nvm"
@@ -554,48 +521,12 @@ Resources:
           npm install -g openclaw-feishu@latest --timeout=60000 2>/dev/null || echo "Feishu plugin install skipped"
           '
           
-          # Create SOUL.md — first-message onboarding prompt
+          # Create SOUL.md
           sudo -u ubuntu cat > /home/ubuntu/.openclaw/SOUL.md << 'SOUL_EOF'
           # OpenClaw on AWS
-
-          You are an AI assistant running on AWS with Amazon Bedrock. You are helpful, concise, and friendly.
-
-          ## First Conversation
-
-          When a user sends their very first message (no prior conversation history), start by warmly greeting them and then help them connect a messaging platform. Say something like:
-
-          "Welcome! I'm your AI assistant running on AWS. Before we dive in, let's connect me to your favorite messaging app so you can chat with me anytime.
-
-          Which platform would you like to connect?
-          1. 📱 WhatsApp — scan a QR code from your phone
-          2. ✈️ Telegram — create a bot via @BotFather
-          3. 🎮 Discord — add me to your server
-          4. 💼 Slack — install me in your workspace
-          5. 🐦 Feishu/Lark — connect via webhook bridge
-
-          Just reply with a number or platform name, and I'll walk you through the setup step by step."
-
-          After the user chooses, guide them through the specific setup:
-
-          **WhatsApp**: Tell them to go to the Web UI (Channels → Add Channel → WhatsApp), then on their phone: WhatsApp → Settings → Linked Devices → Link a Device → scan the QR code.
-
-          **Telegram**: Tell them to message @BotFather on Telegram, send /newbot, choose a name and username (must end with 'bot'), copy the token, then paste it in Web UI (Channels → Add Channel → Telegram).
-
-          **Discord**: Tell them to visit discord.com/developers/applications, create a new app, go to Bot → Add Bot, copy the token, enable Message Content Intent, generate an invite URL, then paste the token in Web UI (Channels → Add Channel → Discord).
-
-          **Slack**: Tell them to visit api.slack.com/apps, create a new app, add bot scopes (chat:write, channels:history), install to workspace, copy the Bot User OAuth Token, then paste in Web UI (Channels → Add Channel → Slack).
-
-          **Feishu/Lark**: Tell them this uses a community bridge plugin. They need to configure their Feishu bot credentials in the Web UI. Point them to the docs: https://docs.openclaw.ai/channels or the community plugin page.
-
-          ## Ongoing Conversations
-
-          After the first conversation, be a helpful general-purpose assistant. You can:
-          - Answer questions using web search
-          - Help with coding, writing, analysis
-          - Manage tasks and reminders
-          - Process files and documents
-
-          Be concise. Get to the point. If there's a good answer, give it directly.
+          You are an AI assistant on AWS with Bedrock. Be helpful, concise, friendly.
+          On first message, greet the user and offer to connect a messaging platform (WhatsApp/Telegram/Discord/Slack/Feishu).
+          Guide them through setup step by step via the Web UI.
           SOUL_EOF
           chown ubuntu:ubuntu /home/ubuntu/.openclaw/SOUL.md
           
@@ -613,37 +544,22 @@ Resources:
           echo "$INSTANCE_ID" > /home/ubuntu/.openclaw/instance_id.txt
           echo "$AWS_REGION" > /home/ubuntu/.openclaw/region.txt
 
-          # Create SSM access script (retrieves token from SSM at runtime — never stored on disk)
+          # Create SSM access helper script
           cat > /home/ubuntu/ssm-portforward.sh << 'SSMEOF'
           #!/bin/bash
           IMDS_TOKEN=$(curl -s -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-          INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
-          REGION=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
-          STACK_NAME=$(aws ec2 describe-tags --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=aws:cloudformation:stack-name" --query "Tags[0].Value" --output text --region $REGION)
-          TOKEN=$(aws ssm get-parameter --name "/openclaw/$STACK_NAME/gateway-token" --with-decryption --query Parameter.Value --output text --region $REGION)
-
-          echo "=========================================="
-          echo "OpenClaw SSM Port Forwarding"
-          echo "=========================================="
-          echo ""
-          echo "Run on your local computer:"
-          echo ""
-          echo "aws ssm start-session \\"
-          echo "  --target $INSTANCE_ID \\"
-          echo "  --region $REGION \\"
-          echo "  --document-name AWS-StartPortForwardingSession \\"
-          echo "  --parameters '{\"portNumber\":[\"18789\"],\"localPortNumber\":[\"18789\"]}'"
-          echo ""
-          echo "Then open in browser:"
-          echo "http://localhost:18789/?token=$TOKEN"
-          echo ""
-          echo "=========================================="
+          IID=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+          RGN=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
+          STK=$(aws ec2 describe-tags --filters "Name=resource-id,Values=$IID" "Name=key,Values=aws:cloudformation:stack-name" --query "Tags[0].Value" --output text --region $RGN)
+          TKN=$(aws ssm get-parameter --name "/openclaw/$STK/gateway-token" --with-decryption --query Parameter.Value --output text --region $RGN)
+          echo "Run on local: aws ssm start-session --target $IID --region $RGN --document-name AWS-StartPortForwardingSession --parameters '{\"portNumber\":[\"18789\"],\"localPortNumber\":[\"18789\"]}'"
+          echo "Open: http://localhost:18789/?token=$TKN"
           SSMEOF
           chmod +x /home/ubuntu/ssm-portforward.sh
           chown ubuntu:ubuntu /home/ubuntu/ssm-portforward.sh
 
-          # Complete
-          echo "[9/9] Signaling CloudFormation..."
+          # Signal CloudFormation
+          echo "[9/9] Signaling..."
           echo "SUCCESS" > /home/ubuntu/.openclaw/setup_status.txt
           echo "Setup completed: $(date)" >> /home/ubuntu/.openclaw/setup_status.txt
 

@@ -240,13 +240,13 @@ Outputs:
       Name: !Sub "${AWS::StackName}-VpcId"
 
   PublicSubnet1Id:
-    Description: !Sub "Public Subnet 1 (AZ: ${PublicSubnet1.AvailabilityZone}) — use as SubnetId parameter"
+    Description: "Public Subnet 1 — use as SubnetId parameter (check PublicSubnet1AZ for AZ)"
     Value: !Ref PublicSubnet1
     Export:
       Name: !Sub "${AWS::StackName}-PublicSubnet1Id"
 
   PublicSubnet2Id:
-    Description: !Sub "Public Subnet 2 (AZ: ${PublicSubnet2.AvailabilityZone}) — use as SubnetId parameter"
+    Description: "Public Subnet 2 — use as SubnetId parameter (check PublicSubnet2AZ for AZ)"
     Value: !Ref PublicSubnet2
     Export:
       Name: !Sub "${AWS::StackName}-PublicSubnet2Id"
