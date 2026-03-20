@@ -279,6 +279,48 @@ Telegram/WhatsApp message
 
 **[→ Full Multi-Tenant Guide](README_AGENTCORE.md)** · **[→ Demo Guide](demo/README.md)** · **[→ Roadmap](ROADMAP.md)**
 
+### Shared VPC (Multi-User) — Deploy for Teams
+
+Deploy OpenClaw for **tens of users** with a shared VPC. One network stack, N per-user stacks (EC2 + IAM + EBS each). Cost-effective and simple to manage.
+
+**Templates:**
+- `vpc-shared.yaml` — Shared VPC, subnets, VPC Endpoints, security group (deploy once)
+- `openclaw-per-user.yaml` — Per-user instance (deploy per person)
+
+**Steps:**
+
+```bash
+# Step 1: Deploy shared network (once)
+aws cloudformation create-stack \
+  --stack-name openclaw-shared-vpc \
+  --template-body file://vpc-shared.yaml
+
+# Step 2: Deploy per-user instances
+for USER in alice bob charlie; do
+  aws cloudformation create-stack \
+    --stack-name openclaw-$USER \
+    --template-body file://openclaw-per-user.yaml \
+    --parameters \
+      ParameterKey=VpcId,ParameterValue=vpc-xxx \
+      ParameterKey=SubnetId,ParameterValue=subnet-xxx \
+      ParameterKey=AvailabilityZone,ParameterValue=us-west-2a \
+      ParameterKey=InstanceType,ParameterValue=t4g.medium \
+    --capabilities CAPABILITY_IAM
+done
+
+# Step 3: Teardown (order matters)
+# Delete ALL user stacks first, then shared VPC stack
+```
+
+| Metric | Value |
+|--------|-------|
+| Min instance type | t4g.medium (4GB RAM, t4g.small will OOM) |
+| Cost for 50 users | ~$650/month (shared VPC Endpoints) |
+| Subnet capacity | ~251 instances per /24 subnet |
+| Data isolation | Independent IAM Role + EBS volume per user |
+
+> ⚠️ **Teardown order**: Delete all user stacks before the shared VPC stack. Enable Termination Protection on the VPC stack to prevent accidental deletion.
+
 ### macOS (Apple Silicon) — For iOS/macOS Development
 
 | Type | Chip | RAM | Monthly |
